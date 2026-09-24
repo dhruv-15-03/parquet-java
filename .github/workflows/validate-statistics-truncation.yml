@@ -41,7 +41,7 @@ jobs:
       MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=1
       BASE_SHA: 2df8d02678dab4bb8b926a0d3221cc652984c7ab
       TEST_SOURCE: parquet-hadoop/src/test/java/org/apache/parquet/format/converter/TestParquetMetadataConverter.java
-      TEST_SHA256: b9e9fad0028142c1652d461e2823e6951075e08a3355836e9c79a65f9b6ae35f
+      TEST_SHA256: d65c483fb4b2603e50a506c36b5127569e2e4c71a71c339c53b8bca5888695af
     steps:
       - name: Check out the exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

@@ -971,12 +971,8 @@ public class TestParquetMetadataConverter {
       if (maxLen > truncateLen) {
         expectedMax[expectedMax.length - 1] = (byte) 'c';
       }
-      assertThat(formatStats.getMin_value())
-          .hasSize(expectedMin.length)
-          .containsExactly(expectedMin);
-      assertThat(formatStats.getMax_value())
-          .hasSize(expectedMax.length)
-          .containsExactly(expectedMax);
+      assertThat(formatStats.getMin_value()).hasSize(expectedMin.length).containsExactly(expectedMin);
+      assertThat(formatStats.getMax_value()).hasSize(expectedMax.length).containsExactly(expectedMax);
       assertThat(formatStats.isSetNull_count()).isTrue();
       assertThat(formatStats.getNull_count()).isZero();
     } else {
