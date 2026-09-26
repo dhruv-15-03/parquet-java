@@ -39,13 +39,15 @@ jobs:
     timeout-minutes: 45
     env:
       MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=1
-      BASE_SHA: 2df8d02678dab4bb8b926a0d3221cc652984c7ab
+      BASE_SHA: 4b37c193e2f796d553a20cc57ec9835ceaa1c95c
+      VALIDATION_SHA: a9940be5cfee6962dc0f3e064b4c619a07b2d3b7
       TEST_SOURCE: parquet-hadoop/src/test/java/org/apache/parquet/format/converter/TestParquetMetadataConverter.java
-      TEST_SHA256: d65c483fb4b2603e50a506c36b5127569e2e4c71a71c339c53b8bca5888695af
+      TEST_SHA256: a3e474f8860400187c4f1fb0a90429e573323ff32cc196eea4110c01abc1b05e
     steps:
       - name: Check out the exact validation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: a9940be5cfee6962dc0f3e064b4c619a07b2d3b7
           fetch-depth: 3
           persist-credentials: false
 
@@ -61,12 +63,17 @@ jobs:
 
           if os.environ["GITHUB_RUN_ATTEMPT"] != "1":
               raise SystemExit("Reruns are not authorized; a corrective attempt needs a new commit.")
+          head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          if head != os.environ["VALIDATION_SHA"]:
+              raise SystemExit("Checkout does not match the contribution commit.")
           subprocess.run(["git", "merge-base", "--is-ancestor", os.environ["BASE_SHA"], "HEAD"], check=True)
           changed = set(subprocess.check_output(
               ["git", "diff", "--name-only", os.environ["BASE_SHA"], "HEAD"], text=True).splitlines())
-          allowed = {os.environ["TEST_SOURCE"], ".github/workflows/validate-statistics-truncation.yml"}
+          allowed = {os.environ["TEST_SOURCE"]}
           if changed != allowed:
               raise SystemExit(f"Unexpected changed files: {sorted(changed)}")
+          if pathlib.Path(".github/workflows/validate-statistics-truncation.yml").exists():
+              raise SystemExit("Fork-only workflow must not be part of the contribution checkout.")
           source_hash = hashlib.sha256(pathlib.Path(os.environ["TEST_SOURCE"]).read_bytes()).hexdigest()
           if source_hash != os.environ["TEST_SHA256"]:
               raise SystemExit("Test source does not match the recorded patch.")
@@ -139,27 +146,37 @@ jobs:
               raise SystemExit("Insufficient resources before Maven; no build started.")
           PY
 
-      - name: Compile the selected reactor and run two converter tests
+      - name: Compile the selected reactor and run the converter test class
         id: tests
         run: |
           set -euo pipefail
           date +%s > "$RUNNER_TEMP/parquet-tests-started"
+          set +e
           mvn -B -ntp -T 1 -pl parquet-hadoop -am package \
-            '-Dtest=TestParquetMetadataConverter#testBinaryStatsWithTruncation+testBinaryStatsWithTruncationAtSizeLimit' \
+            -Dtest=TestParquetMetadataConverter \
             -Dsurefire.failIfNoSpecifiedTests=false \
             -DforkCount=1 -DreuseForks=true \
             -Djunit.jupiter.execution.parallel.enabled=false \
             '-Dsurefire.argLine=-Xmx256m -XX:ActiveProcessorCount=1 -XX:MaxJavaStackTraceDepth=8' \
             -Dmaven.javadoc.skip=true -Dsource.skip=true \
             > "$RUNNER_TEMP/parquet-maven.log" 2>&1
+          result=$?
+          set -e
+          printf '%s\n' "$result" > "$RUNNER_TEMP/parquet-test-exit-code"
+          exit "$result"
 
       - name: Check formatting without modifying source
         id: formatting
         if: always() && steps.toolchain.outcome == 'success'
         run: |
           set -euo pipefail
+          set +e
           mvn -B -ntp -T 1 -pl parquet-hadoop spotless:check \
             > "$RUNNER_TEMP/parquet-spotless.log" 2>&1
+          result=$?
+          set -e
+          printf '%s\n' "$result" > "$RUNNER_TEMP/parquet-format-exit-code"
+          exit "$result"
 
       - name: Emit bounded evidence and require actual test success
         if: always()
@@ -182,6 +199,7 @@ jobs:
                                 "TEST-org.apache.parquet.format.converter.TestParquetMetadataConverter.xml")
           evidence = {
               "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "workflow_head": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "test_step": os.environ["TEST_OUTCOME"],
@@ -199,8 +217,8 @@ jobs:
               started = temp / "parquet-tests-started"
               fresh = started.exists() and report.stat().st_mtime >= int(started.read_text().strip())
               valid_report = (
-                  counts == {"tests": 2, "failures": 0, "errors": 0, "skipped": 0}
-                  and len(cases) == 2 and set(names) == expected and fresh
+                  counts == {"tests": 78, "failures": 0, "errors": 0, "skipped": 0}
+                  and len(cases) == 78 and len(set(names)) == 78 and expected.issubset(names) and fresh
                   and all(case.get("classname") == "org.apache.parquet.format.converter.TestParquetMetadataConverter"
                           and not any(case.find(tag) is not None for tag in ("failure", "error", "skipped"))
                           for case in cases)
@@ -220,9 +238,15 @@ jobs:
               print("PARQUET_JUNIT_XML_BASE64=" + base64.b64encode(ET.tostring(sanitized)).decode("ascii"))
           else:
               evidence["report_error"] = "No actual Surefire report was produced."
+          for label, filename in (("test_exit_code", "parquet-test-exit-code"),
+                                  ("format_exit_code", "parquet-format-exit-code")):
+              exit_file = temp / filename
+              evidence[label] = int(exit_file.read_text().strip()) if exit_file.exists() else None
           clean = subprocess.run(["git", "diff", "--exit-code"], check=False).returncode == 0
           success = (valid_report and clean
+                     and evidence["head"] == os.environ["VALIDATION_SHA"]
                      and evidence["source_sha256"] == os.environ["TEST_SHA256"]
+                     and evidence["test_exit_code"] == 0 and evidence["format_exit_code"] == 0
                      and evidence["test_step"] == "success" and evidence["format_step"] == "success")
           evidence.update({"tracked_source_clean": clean, "validation_passed": success})
           print("PARQUET_VALIDATION_EVIDENCE=" + json.dumps(evidence, sort_keys=True))
